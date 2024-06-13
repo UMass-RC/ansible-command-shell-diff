@@ -23,7 +23,7 @@ class ActionModule(ActionBase):
             )
 
         command_action = self._shared_loader_obj.action_loader.get(
-            "ansible.legacy.command",
+            "unity.command_shell_diff.command",
             task=self._task,
             connection=self._connection,
             play_context=self._play_context,
