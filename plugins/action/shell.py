@@ -20,7 +20,7 @@ class ActionModule(ActionBase):
         if "expand_argument_vars" in self._task.args:
             raise AnsibleActionFail(f"Unsupported parameters for ({self._task.action}) module: expand_argument_vars")
 
-        command_action = self._shared_loader_obj.action_loader.get('ansible.legacy.command',
+        command_action = self._shared_loader_obj.action_loader.get('unity.command_shell_diff.command',
                                                                    task=self._task,
                                                                    connection=self._connection,
                                                                    play_context=self._play_context,
