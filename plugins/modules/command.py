@@ -31,7 +31,8 @@ attributes:
         details: while the command itself is arbitrary and cannot be subject to the check mode semantics it adds O(creates)/O(removes) options as a workaround
         support: partial
     diff_mode:
-        support: none
+        details: the `modifies` option shows a diff before/after command execution.
+        support: partial
     platform:
       support: full
       platforms: posix
@@ -49,7 +50,7 @@ options:
   free_form:
     description:
       - The command module takes a free form string as a command to run.
-      - There is no actual parameter named C(free_form).
+      - There is no actual parameter named 'free form'.
   cmd:
     type: str
     description:
@@ -73,6 +74,14 @@ options:
       - A filename or (since 2.0) glob pattern. If a matching file exists, this step B(will) be run.
       - This is checked after O(creates) is checked.
     version_added: "0.8"
+  modifies:
+    type: list
+    elements: str
+    description:
+      - A list of file paths. A tempfile copy is made of each file before command execution,
+      - and then `results['changed']` `results['diff']` are set by comparing after command execution.
+      - Plain text files only.
+    version_added: "2.18"
   chdir:
     type: path
     description:
@@ -140,6 +149,13 @@ EXAMPLES = r"""
   ansible.builtin.command:
     cmd: /usr/bin/make_database.sh db_user db_name
     creates: /path/to/database
+
+- name: Run command and show changes in /path/to/database file
+  ansible.builtin.command:
+    cmd: /usr/bin/make_database.sh db_user db_name
+    modifies:
+      - /path/to/database
+    diff: true
 
 - name: Change the working directory to somedir/ and run the command as db_owner if /path/to/database does not exist
   ansible.builtin.command: /usr/bin/make_database.sh db_user db_name
@@ -233,12 +249,99 @@ stderr_lines:
 import datetime
 import glob
 import os
+import pwd
+import grp
 import shlex
+import stat
+import hashlib
+
+from typing import List
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils.common.text.converters import to_native, to_bytes, to_text
 from ansible.module_utils.common.collections import is_iterable
 
+
+def examine_file(path: str) -> dict:
+
+    def human_readable_size(st_size) -> str:
+        if st_size < 1024:
+            return f"{st_size} bytes"
+        current_size = st_size
+        for suffix in ["KiB", "MiB", "GiB", "TiB", "PiB"]:
+            current_size = current_size / 1024
+            if current_size < 1024:
+                return f"{current_size:.2f} {suffix}"
+        return f"{current_size:.2f} {suffix}"
+
+    def human_readable_file_type(st_mode) -> str:
+        func2file_type = {
+            stat.S_ISREG: "regular file",
+            stat.S_ISDIR: "directory",
+            stat.S_ISCHR: "character device",
+            stat.S_ISBLK: "block device",
+            stat.S_ISFIFO: "FIFO/pipe",
+            stat.S_ISLNK: "symlink",
+            stat.S_ISSOCK: "socket",
+        }
+        for func, file_type in func2file_type.items():
+            if func(st_mode):
+                return file_type
+        return "unknown"
+
+    def _human_readable_stat(path: str) -> dict:
+        path_stat = os.stat(path, follow_symlinks=False)
+        return {
+            "path": path,
+            "owner": pwd.getpwuid(path_stat.st_uid).pw_name,
+            "group": grp.getgrgid(path_stat.st_gid).gr_name,
+            "file_type": human_readable_file_type(path_stat.st_mode),
+            "mode": stat.filemode(path_stat.st_mode),
+            "size": human_readable_size(path_stat.st_size),
+        }
+
+    def get_symlink_destination_absolute(symlink_path: str) -> str:
+        destination_path = os.readlink(symlink_path)
+        if not os.path.isabs(destination_path):
+            # "/a/b/c" -> "../d" = "a/b/c/../d"
+            return os.path.abspath(os.path.join(os.path.dirname(symlink_path), destination_path))
+        return destination_path
+
+    def human_readable_stat(path) -> List[dict]:
+        """
+        Return a list of human-readable stat dictionaries. If the path is a symlink,
+        append another dict to the list using the destination of that symlink, and so on.
+        """
+        path = os.path.abspath(path)
+        output = [_human_readable_stat(path)]
+        seen_paths = [path]  # To handle cyclic symlinks
+        while output[-1]["file_type"] == "symlink":
+            path = get_symlink_destination_absolute(path)
+            if path in seen_paths:
+                raise RecursionError(f"Cyclic symlinks detected: {seen_paths + [path]}")
+            output.append(_human_readable_stat(path))
+        return output
+
+    output = {}
+    try:
+        output["stat"] = human_readable_stat(path)
+        output["state"] = "present"
+        if output["stat"][-1]["file_type"] == "regular file":  # follow symlinks
+            try:
+                with open(path, "r", encoding="utf8") as fp:
+                    output["content"] = fp.read()
+            except UnicodeDecodeError:
+                with open(path, "rb") as fp:
+                    output["content"] = (
+                        f"content ommitted, binary file. sha1sum: {hashlib.sha1(fp.read()).hexdigest()}"
+                    )
+        elif output["stat"][-1]["file_type"] == "directory":  # follow symlinks
+            output["content"] = os.listdir(path)
+        else:
+            output["content"] = "content ommitted, special file."
+    except FileNotFoundError:
+        output = {"state": "absent", "stat": None, "contents": None}
+    return output
 
 def main():
 
@@ -256,6 +359,7 @@ def main():
             expand_argument_vars=dict(type='bool', default=True),
             creates=dict(type='path'),
             removes=dict(type='path'),
+            modifies=dict(type='list', elements='str'),
             # The default for this really comes from the action plugin
             stdin=dict(required=False),
             stdin_add_newline=dict(type='bool', default=True),
@@ -272,6 +376,7 @@ def main():
     argv = module.params['argv']
     creates = module.params['creates']
     removes = module.params['removes']
+    modifies = module.params['modifies']
     stdin = module.params['stdin']
     stdin_add_newline = module.params['stdin_add_newline']
     strip = module.params['strip_empty_ends']
@@ -329,6 +434,13 @@ def main():
 
     r['changed'] = True
 
+    # initialize before/after data structure, fill out before
+    path2diff = {}
+    if modifies is not None and len(modifies) > 0:
+        for path in modifies:
+            path2diff[path] = {"before": {}, "after": {}}
+            path2diff[path]["before"] = examine_file(path)
+
     # actually executes command (or not ...)
     if not module.check_mode:
         r['start'] = datetime.datetime.now()
@@ -344,6 +456,19 @@ def main():
             r['skipped'] = True
             # skipped=True and changed=True are mutually exclusive
             r['changed'] = False
+
+    # fill out the "after" part of the before/after data structure, compare
+    # in check mode, we must rely on "creates"/"removes" to set "changed"
+    if not module.check_mode and modifies is not None and len(modifies) > 0:
+        r['diff'] = []
+        r['changed'] = False
+        for path in modifies:
+            path2diff[path]["after"] = examine_file(path)
+        for path in modifies:
+            if path2diff[path]["before"] != path2diff[path]["after"]:
+                new_diff = path2diff[path]
+                r['diff'].append(new_diff)
+                r['changed'] = True
 
     # convert to text for jsonization and usability
     if r['start'] is not None and r['end'] is not None:
