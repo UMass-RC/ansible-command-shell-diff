@@ -32,7 +32,8 @@ attributes:
         details: while the command itself is arbitrary and cannot be subject to the check mode semantics it adds O(creates)/O(removes) options as a workaround
         support: partial
     diff_mode:
-        support: none
+        details: the `modifies` option shows a diff before/after command execution.
+        support: partial
     platform:
       support: full
       platforms: posix
@@ -50,7 +51,7 @@ options:
   free_form:
     description:
       - The command module takes a free form string as a command to run.
-      - There is no actual parameter named C(free_form).
+      - There is no actual parameter named 'free form'.
   cmd:
     type: str
     description:
@@ -74,6 +75,14 @@ options:
       - A filename or (since 2.0) glob pattern. If a matching file exists, this step B(will) be run.
       - This is checked after O(creates) is checked.
     version_added: "0.8"
+  modifies:
+    type: list
+    elements: str
+    description:
+      - A list of file paths. A tempfile copy is made of each file before command execution,
+      - and then `results['changed']` `results['diff']` are set by comparing after command execution.
+      - Plain text files only.
+    version_added: "2.18"
   chdir:
     type: path
     description:
@@ -141,6 +150,13 @@ EXAMPLES = r'''
   ansible.builtin.command:
     cmd: /usr/bin/make_database.sh db_user db_name
     creates: /path/to/database
+
+- name: Run command and show changes in /path/to/database file
+  ansible.builtin.command:
+    cmd: /usr/bin/make_database.sh db_user db_name
+    modifies:
+      - /path/to/database
+    diff: true
 
 - name: Change the working directory to somedir/ and run the command as db_owner if /path/to/database does not exist
   ansible.builtin.command: /usr/bin/make_database.sh db_user db_name
@@ -235,10 +251,38 @@ import datetime
 import glob
 import os
 import shlex
+import tempfile
+import shutil
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils.common.text.converters import to_native, to_bytes, to_text
 from ansible.module_utils.common.collections import is_iterable
+
+
+def _get_diff_data(before_path, after_path) -> dict:
+    with open(before_path, "rb") as before_file:
+        before_contents = before_file.read()
+    with open(after_path, "rb") as after_file:
+        after_contents = after_file.read()
+    return {
+        "before": before_contents,
+        "after": after_contents
+    }
+
+
+def _create_copy_or_empty_tempfile(path: str, tempfile_dir: str) -> str:
+    '''
+    Create a tempfile containing a copy of the file at `path`.
+    If `path` does not point to a file, create an empty tempfile.
+    '''
+    fd, tempfile_path = tempfile.mkstemp(dir=tempfile_dir)
+    if os.path.isfile(path):
+        try:
+            shutil.copy(path, tempfile_path)
+        except Exception as err:
+            os.remove(tempfile_path)
+            raise Exception(err)
+    return tempfile_path
 
 
 def main():
@@ -256,6 +300,7 @@ def main():
             expand_argument_vars=dict(type='bool', default=True),
             creates=dict(type='path'),
             removes=dict(type='path'),
+            modifies=dict(type='list', elements='str'),
             # The default for this really comes from the action plugin
             stdin=dict(required=False),
             stdin_add_newline=dict(type='bool', default=True),
@@ -270,6 +315,7 @@ def main():
     argv = module.params['argv']
     creates = module.params['creates']
     removes = module.params['removes']
+    modifies = module.params['modifies']
     stdin = module.params['stdin']
     stdin_add_newline = module.params['stdin_add_newline']
     strip = module.params['strip_empty_ends']
@@ -337,6 +383,12 @@ def main():
 
     r['changed'] = True
 
+    # make copies of files before command execution so that we can compare later
+    if modifies is not None and len(modifies) > 0:
+        file_copy_paths_before = dict()
+        for path in modifies:
+            file_copy_paths_before[path] = _create_copy_or_empty_tempfile(path, module.tmpdir)
+
     # actually executes command (or not ...)
     if not module.check_mode:
         r['start'] = datetime.datetime.now()
@@ -352,6 +404,18 @@ def main():
             r['skipped'] = True
             # skipped=True and changed=True are mutually exclusive
             r['changed'] = False
+
+    # compare current state of files to their before-command tempfile copies
+    if modifies is not None and len(modifies) > 0:
+        r['diff'] = []
+        r['changed'] = False
+        for path in modifies:
+            copy_path_before = file_copy_paths_before[path]
+            diff = _get_diff_data(copy_path_before, path)
+            r['diff'].append(diff)
+            if not r['changed'] and diff['before'] != diff['after']:
+                r['changed'] = True
+            os.remove(copy_path_before)
 
     # convert to text for jsonization and usability
     if r['start'] is not None and r['end'] is not None:
