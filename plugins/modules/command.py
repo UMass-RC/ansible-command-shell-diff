@@ -260,10 +260,15 @@ from ansible.module_utils.common.collections import is_iterable
 
 
 def _get_diff_data(before_path, after_path) -> dict:
+    # if file didn't exist in the beginning, the before_file copy tempfile exists but is empty
     with open(before_path, "rb") as before_file:
         before_contents = before_file.read()
-    with open(after_path, "rb") as after_file:
-        after_contents = after_file.read()
+    # if file does not exist now, show as empty
+    try:
+        with open(after_path, "rb") as after_file:
+            after_contents = after_file.read()
+    except FileNotFoundError:
+        after_contents = ''
     return {
         "before": before_contents,
         "after": after_contents
