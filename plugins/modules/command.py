@@ -259,36 +259,30 @@ from ansible.module_utils.common.text.converters import to_native, to_bytes, to_
 from ansible.module_utils.common.collections import is_iterable
 
 
-def _get_diff_data(before_path, after_path) -> dict:
-    # if file didn't exist in the beginning, the before_file copy tempfile exists but is empty
-    with open(before_path, "rb") as before_file:
-        before_contents = before_file.read()
-    # if file does not exist now, show as empty
-    try:
-        with open(after_path, "rb") as after_file:
-            after_contents = after_file.read()
-    except FileNotFoundError:
-        after_contents = ''
+def stat2dict(x) -> dict:
     return {
-        "before": before_contents,
-        "after": after_contents
-    }
+    'st_mode': x.st_mode,
+    'st_ino': x.st_ino,
+    'st_dev': x.st_dev,
+    'st_nlink': x.st_nlink,
+    'st_uid': x.st_uid,
+    'st_gid': x.st_gid,
+    'st_size': x.st_size,
+    'st_atime': x.st_atime,
+    'st_mtime': x.st_mtime,
+    'st_ctime': x.st_ctime,
+}
 
-
-def _create_copy_or_empty_tempfile(path: str, tempfile_dir: str) -> str:
-    '''
-    Create a tempfile containing a copy of the file at `path`.
-    If `path` does not point to a file, create an empty tempfile.
-    '''
-    fd, tempfile_path = tempfile.mkstemp(dir=tempfile_dir)
-    if os.path.isfile(path):
-        try:
-            shutil.copy(path, tempfile_path)
-        except Exception as err:
-            os.remove(tempfile_path)
-            raise Exception(err)
-    return tempfile_path
-
+def examine_file(path: str, follow_symlinks=False) -> dict:
+    output = {}
+    try:
+        output["stat"] = stat2dict(os.stat(path, follow_symlinks=follow_symlinks))
+        with open(path, "r", encoding="utf8") as fp:
+            output["content"] = fp.read()
+        output["state"] = "present"
+    except FileNotFoundError:
+        output = {"state": "absent", "stat": None, "contents": None}
+    return output
 
 def main():
 
@@ -388,11 +382,12 @@ def main():
 
     r['changed'] = True
 
-    # make copies of files before command execution so that we can compare later
+    # initialize before/after data structure, fill out before
+    path2diff = {}
     if modifies is not None and len(modifies) > 0:
-        file_copy_paths_before = dict()
         for path in modifies:
-            file_copy_paths_before[path] = _create_copy_or_empty_tempfile(path, module.tmpdir)
+            path2diff[path] = {"before": {}, "after": {}}
+            path2diff[path]["before"] = examine_file(path)
 
     # actually executes command (or not ...)
     if not module.check_mode:
@@ -410,17 +405,23 @@ def main():
             # skipped=True and changed=True are mutually exclusive
             r['changed'] = False
 
-    # compare current state of files to their before-command tempfile copies
+    # fill out the "after" part of the before/after data structure, compare
     if modifies is not None and len(modifies) > 0:
         r['diff'] = []
         r['changed'] = False
         for path in modifies:
-            copy_path_before = file_copy_paths_before[path]
-            diff = _get_diff_data(copy_path_before, path)
-            r['diff'].append(diff)
-            if not r['changed'] and diff['before'] != diff['after']:
+            path2diff[path]["after"] = examine_file(path)
+        for path in modifies:
+            if path2diff[path]["before"] != path2diff[path]["after"]:
+                new_diff = path2diff[path]
+                # if state has changed, then "state" is the only key that matters
+                if new_diff["before"]["state"] != new_diff["after"]["state"]:
+                    new_diff["before"] = {"state": new_diff["before"]["state"]}
+                    new_diff["after"] = {"state": new_diff["after"]["state"]}
+                # always add the "path" key
+                new_diff["before"]["path"] = new_diff["after"]["path"] = path
+                r['diff'].append(new_diff)
                 r['changed'] = True
-            os.remove(copy_path_before)
 
     # convert to text for jsonization and usability
     if r['start'] is not None and r['end'] is not None:
