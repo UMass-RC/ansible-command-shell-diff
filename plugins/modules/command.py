@@ -251,8 +251,6 @@ import datetime
 import glob
 import os
 import shlex
-import tempfile
-import shutil
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils.common.text.converters import to_native, to_bytes, to_text
@@ -277,8 +275,13 @@ def examine_file(path: str, follow_symlinks=False) -> dict:
     output = {}
     try:
         output["stat"] = stat2dict(os.stat(path, follow_symlinks=follow_symlinks))
-        with open(path, "r", encoding="utf8") as fp:
-            output["content"] = fp.read()
+        if os.path.islink(path):
+          output["content"] = f"link: {os.readlink(path)}"
+        elif os.path.isdir(path):
+          output["content"] = f"directory: {os.listdir(path)}"
+        elif os.path.isfile(path):
+          with open(path, "r", encoding="utf8") as fp:
+              output["content"] = fp.read()
         output["state"] = "present"
     except FileNotFoundError:
         output = {"state": "absent", "stat": None, "contents": None}
