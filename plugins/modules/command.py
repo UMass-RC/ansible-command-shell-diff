@@ -279,7 +279,7 @@ def examine_file(path: str, follow_symlinks=False) -> dict:
         output["stat"] = stat2dict(path_stat)
         if os.path.islink(path):
           output["content"] = f"link: {os.readlink(path)}"
-        elif any([func(path_stat.st_mode) for func in [stat.S_ISCHR, stat.S_ISBLK, stat.S_ISFIFO, stat.S_ISSOCK, stat.S_ISREG]]):
+        elif any(func(path_stat.st_mode) for func in [stat.S_ISCHR, stat.S_ISBLK, stat.S_ISFIFO, stat.S_ISSOCK]):
             output["content"] = "special file"
         elif os.path.isdir(path):
           output["content"] = f"directory: {os.listdir(path)}"
