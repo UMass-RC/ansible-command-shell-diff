@@ -251,6 +251,7 @@ import datetime
 import glob
 import os
 import shlex
+import stat
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils.common.text.converters import to_native, to_bytes, to_text
@@ -259,24 +260,27 @@ from ansible.module_utils.common.collections import is_iterable
 
 def stat2dict(x) -> dict:
     return {
-    'st_mode': x.st_mode,
-    'st_ino': x.st_ino,
-    'st_dev': x.st_dev,
-    'st_nlink': x.st_nlink,
-    'st_uid': x.st_uid,
-    'st_gid': x.st_gid,
-    'st_size': x.st_size,
-    'st_atime': x.st_atime,
-    'st_mtime': x.st_mtime,
-    'st_ctime': x.st_ctime,
+        'st_mode': x.st_mode,
+        'st_ino': x.st_ino,
+        'st_dev': x.st_dev,
+        'st_nlink': x.st_nlink,
+        'st_uid': x.st_uid,
+        'st_gid': x.st_gid,
+        'st_size': x.st_size,
+        'st_atime': x.st_atime,
+        'st_mtime': x.st_mtime,
+        'st_ctime': x.st_ctime,
 }
 
 def examine_file(path: str, follow_symlinks=False) -> dict:
     output = {}
     try:
-        output["stat"] = stat2dict(os.stat(path, follow_symlinks=follow_symlinks))
+        path_stat = os.stat(path, follow_symlinks=follow_symlinks)
+        output["stat"] = stat2dict(path_stat)
         if os.path.islink(path):
           output["content"] = f"link: {os.readlink(path)}"
+        elif any([func(path_stat.st_mode) for func in [stat.S_ISCHR, stat.S_ISBLK, stat.S_ISFIFO, stat.S_ISSOCK, stat.S_ISREG]]):
+            output["content"] = "special file"
         elif os.path.isdir(path):
           output["content"] = f"directory: {os.listdir(path)}"
         elif os.path.isfile(path):
