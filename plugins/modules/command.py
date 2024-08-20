@@ -252,6 +252,7 @@ import glob
 import os
 import shlex
 import stat
+import hashlib
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils.common.text.converters import to_native, to_bytes, to_text
@@ -287,8 +288,12 @@ def examine_file(path: str, follow_symlinks=False) -> dict:
         elif os.path.isdir(path):
             output["content"] = f"directory: {os.listdir(path)}"
         elif os.path.isfile(path):
-          with open(path, "r", encoding="utf8") as fp:
-              output["content"] = fp.read()
+            try:
+                with open(path, "r", encoding="utf8") as fp:
+                    output["content"] = fp.read()
+            except UnicodeDecodeError:
+                with open(path, "rb") as fp:
+                    output["content"] = f"binary file with sha1: {hashlib.sha1(fp.read())}"
         output["state"] = "present"
     except FileNotFoundError:
         output = {"state": "absent", "stat": None, "contents": None}
