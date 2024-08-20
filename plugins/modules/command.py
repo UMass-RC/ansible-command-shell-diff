@@ -326,6 +326,7 @@ def examine_file(path: str) -> dict:
     output = {}
     try:
         output["stat"] = human_readable_stat(path)
+        output["state"] = "present"
         if output["stat"][0]["file_type"] in ["regular file", "symlink"]:
             try:
                 with open(path, "r", encoding="utf8") as fp:
