@@ -279,8 +279,9 @@ def examine_file(path: str, follow_symlinks=False) -> dict:
         path_stat = os.stat(path, follow_symlinks=follow_symlinks)
         output["stat"] = stat2dict(path_stat)
         # commands might update these timestamps without actually changing the file
-        del output["st_atime"]
-        del output["st_mtime"]
+        del output["stat"]["st_atime"]
+        del output["stat"]["st_mtime"]
+        del output["stat"]["st_ctime"]
         if os.path.islink(path):
             output["content"] = f"link: {os.readlink(path)}"
         elif any(func(path_stat.st_mode) for func in [stat.S_ISCHR, stat.S_ISBLK, stat.S_ISFIFO, stat.S_ISSOCK]):
