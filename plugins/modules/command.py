@@ -474,12 +474,6 @@ def main():
         for path in modifies:
             if path2diff[path]["before"] != path2diff[path]["after"]:
                 new_diff = path2diff[path]
-                # if state has changed, then "state" is the only key that matters
-                if new_diff["before"]["state"] != new_diff["after"]["state"]:
-                    new_diff["before"] = {"state": new_diff["before"]["state"]}
-                    new_diff["after"] = {"state": new_diff["after"]["state"]}
-                # always add the "path" key
-                new_diff["before"]["path"] = new_diff["after"]["path"] = path
                 r['diff'].append(new_diff)
                 r['changed'] = True
 
