@@ -250,52 +250,95 @@ stderr_lines:
 import datetime
 import glob
 import os
+import pwd
+import grp
 import shlex
 import stat
 import hashlib
+
+from typing import List
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils.common.text.converters import to_native, to_bytes, to_text
 from ansible.module_utils.common.collections import is_iterable
 
 
-def stat2dict(x) -> dict:
-    return {
-        'st_mode': x.st_mode,
-        'st_ino': x.st_ino,
-        'st_dev': x.st_dev,
-        'st_nlink': x.st_nlink,
-        'st_uid': x.st_uid,
-        'st_gid': x.st_gid,
-        'st_size': x.st_size,
-        'st_atime': x.st_atime,
-        'st_mtime': x.st_mtime,
-        'st_ctime': x.st_ctime,
-}
+def examine_file(path: str) -> dict:
 
-def examine_file(path: str, follow_symlinks=False) -> dict:
+    def human_readable_size(st_size) -> str:
+        if st_size < 1024:
+            return f"{st_size} bytes"
+        current_size = st_size
+        for suffix in ["KiB", "MiB", "GiB", "TiB", "PiB"]:
+            current_size = current_size / 1024
+            if current_size < 1024:
+                return f"{current_size:.2f} {suffix}"
+        return f"{current_size:.2f} {suffix}"
+
+    def human_readable_file_type(st_mode) -> str:
+        func2file_type = {
+            stat.S_ISREG: "regular file",
+            stat.S_ISDIR: "directory",
+            stat.S_ISCHR: "character device",
+            stat.S_ISBLK: "block device",
+            stat.S_ISFIFO: "FIFO/pipe",
+            stat.S_ISLNK: "symlink",
+            stat.S_ISSOCK: "socket",
+        }
+        for func, file_type in func2file_type.items():
+            if func(st_mode):
+                return file_type
+        return "unknown"
+
+    def _human_readable_stat(path: str) -> dict:
+        path_stat = os.stat(path, follow_symlinks=False)
+        return {
+            "path": path,
+            "owner": pwd.getpwuid(path_stat.st_uid).pw_name,
+            "group": grp.getgrgid(path_stat.st_gid).gr_name,
+            "file_type": human_readable_file_type(path_stat.st_mode),
+            "mode": stat.filemode(path_stat.st_mode),
+            "size": human_readable_size(path_stat.st_size),
+        }
+
+    def get_symlink_destination_absolute(symlink_path: str) -> str:
+        destination_path = os.readlink(symlink_path)
+        if not os.path.isabs(destination_path):
+            # "/a/b/c" -> "../d" = "a/b/c/../d"
+            return os.path.abspath(os.path.join(os.path.dirname(symlink_path), destination_path))
+        return destination_path
+
+    def human_readable_stat(path) -> List[dict]:
+        """
+        Return a list of human-readable stat dictionaries. If the path is a symlink,
+        append another dict to the list using the destination of that symlink, and so on.
+        """
+        path = os.path.abspath(path)
+        output = [_human_readable_stat(path)]
+        seen_paths = [path]  # To handle cyclic symlinks
+        while output[-1]["file_type"] == "symlink":
+            path = get_symlink_destination_absolute(path)
+            if path in seen_paths:
+                raise RecursionError(f"Cyclic symlinks detected: {seen_paths + [path]}")
+            output.append(_human_readable_stat(path))
+        return output
+
     output = {}
     try:
-        path_stat = os.stat(path, follow_symlinks=follow_symlinks)
-        output["stat"] = stat2dict(path_stat)
-        # commands might update these timestamps without actually changing the file
-        del output["stat"]["st_atime"]
-        del output["stat"]["st_mtime"]
-        del output["stat"]["st_ctime"]
-        if os.path.islink(path):
-            output["content"] = f"link: {os.readlink(path)}"
-        elif any(func(path_stat.st_mode) for func in [stat.S_ISCHR, stat.S_ISBLK, stat.S_ISFIFO, stat.S_ISSOCK]):
-            output["content"] = "special file"
-        elif os.path.isdir(path):
-            output["content"] = f"directory: {os.listdir(path)}"
-        elif os.path.isfile(path):
+        output["stat"] = human_readable_stat(path)
+        if output["stat"][0]["file_type"] in ["regular file", "symlink"]:
             try:
                 with open(path, "r", encoding="utf8") as fp:
                     output["content"] = fp.read()
             except UnicodeDecodeError:
                 with open(path, "rb") as fp:
-                    output["content"] = f"binary file with sha1: {hashlib.sha1(fp.read()).hexdigest()}"
-        output["state"] = "present"
+                    output["content"] = (
+                        f"content ommitted, binary file. sha1sum: {hashlib.sha1(fp.read()).hexdigest()}"
+                    )
+        elif output["stat"][0]["file_type"] == "directory":
+            output["content"] = os.listdir(path)
+        else:
+            output["content"] = "content ommitted, special file."
     except FileNotFoundError:
         output = {"state": "absent", "stat": None, "contents": None}
     return output
