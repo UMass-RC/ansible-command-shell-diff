@@ -294,7 +294,7 @@ def examine_file(path: str, follow_symlinks=False) -> dict:
                     output["content"] = fp.read()
             except UnicodeDecodeError:
                 with open(path, "rb") as fp:
-                    output["content"] = f"binary file with sha1: {hashlib.sha1(fp.read())}"
+                    output["content"] = f"binary file with sha1: {hashlib.sha1(fp.read()).hexdigest()}"
         output["state"] = "present"
     except FileNotFoundError:
         output = {"state": "absent", "stat": None, "contents": None}
