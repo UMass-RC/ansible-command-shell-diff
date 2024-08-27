@@ -349,10 +349,7 @@ def format_diffs(examination_before: dict, examination_after: dict) -> list:
     # automatic content comparison diffs by ansible need it to be this way
     if "content" in examination_before and "content" in examination_after:
         output.append(
-            {
-                "before": examination_before["content"],
-                "after": examination_after["content"]
-            }
+            {"before": examination_before["content"], "after": examination_after["content"]}
         )
         del examination_before["content"]
         del examination_after["content"]
