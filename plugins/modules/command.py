@@ -341,7 +341,22 @@ def examine_file(path: str) -> dict:
         else:
             output["content"] = "content ommitted, special file."
     except FileNotFoundError:
-        output = {"state": "absent", "stat": None, "contents": None}
+        output = {"state": "absent", "stat": None, "content": None}
+    return output
+
+def format_diffs(examination_before: dict, examination_after: dict) -> list:
+    output = []
+    # automatic content comparison diffs by ansible need it to be this way
+    if "content" in examination_before and "content" in examination_after:
+        output.append(
+            {
+                "before": examination_before["content"],
+                "after": examination_after["content"]
+            }
+        )
+        del examination_before["content"]
+        del examination_after["content"]
+    output.append({"before": examination_before, "after": examination_after})
     return output
 
 def main():
@@ -443,11 +458,10 @@ def main():
     r['changed'] = True
 
     # initialize before/after data structure, fill out before
-    path2diff = {}
+    examinations_before = {}
     if modifies is not None and len(modifies) > 0:
         for path in modifies:
-            path2diff[path] = {"before": {}, "after": {}}
-            path2diff[path]["before"] = examine_file(path)
+            examinations_before[path] = examine_file(path)
 
     # actually executes command (or not ...)
     if not module.check_mode:
@@ -470,12 +484,10 @@ def main():
         r['diff'] = []
         r['changed'] = False
         for path in modifies:
-            path2diff[path]["after"] = examine_file(path)
-        for path in modifies:
-            if path2diff[path]["before"] != path2diff[path]["after"]:
-                new_diff = path2diff[path]
-                r['diff'].append(new_diff)
+            examination_after = examine_file(path)
+            if examinations_before[path] != examination_after:
                 r['changed'] = True
+                r['diff'] += format_diffs(examinations_before[path], examination_after)
 
     # convert to text for jsonization and usability
     if r['start'] is not None and r['end'] is not None:
