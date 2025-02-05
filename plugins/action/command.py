@@ -43,7 +43,14 @@ class ActionModule(ActionBase):
             del self._task.args["cmd"]
 
         wrap_async = self._task.async_val and not self._connection.has_native_async
-        results = merge_hash(results, self._execute_module(module_name='unity.command_shell_diff.command', task_vars=task_vars, wrap_async=wrap_async))
+        results = merge_hash(
+            results,
+            self._execute_module(
+                module_name="unity.command_shell_diff.command",
+                task_vars=task_vars,
+                wrap_async=wrap_async,
+            ),
+        )
 
         if not wrap_async:
             # remove a temporary path we created
