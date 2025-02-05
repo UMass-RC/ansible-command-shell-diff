@@ -477,7 +477,8 @@ def main():
             r['changed'] = False
 
     # fill out the "after" part of the before/after data structure, compare
-    if modifies is not None and len(modifies) > 0:
+    # in check mode, we must rely on "creates"/"removes" to set "changed"
+    if not module.check_mode and modifies is not None and len(modifies) > 0:
         r['diff'] = []
         r['changed'] = False
         for path in modifies:
